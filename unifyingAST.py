@@ -1,5 +1,6 @@
 import streamlit as st
 import re
+import streamlit_antd_components as sac
 
 ############################################################
 # AST NODE
@@ -23,22 +24,14 @@ def remove_comments(text):
     return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
 
 ############################################################
-# TOKENIZER
+# TOKENIZE
 ############################################################
 
 def tokenize(text):
-
-    tokens = []
-
-    for line in text.splitlines():
-        line = line.strip()
-        if line:
-            tokens.append(line)
-
-    return tokens
+    return [l.strip() for l in text.splitlines() if l.strip()]
 
 ############################################################
-# TCL PARSER
+# PARSER
 ############################################################
 
 def parse_tcl_content(content, filename):
@@ -53,12 +46,10 @@ def parse_tcl_content(content, filename):
 
     for line in tokens:
 
-        # INCLUDE
         if line.startswith("INCLUDE"):
             node = ASTNode("INCLUDE", line.split()[1], filename)
             current_block.add(node)
 
-        # PROC
         elif line.startswith("PROC"):
             name = line.replace("PROC", "").replace(";", "").strip()
             node = ASTNode("PROC", name, filename)
@@ -66,7 +57,6 @@ def parse_tcl_content(content, filename):
             stack.append(current_block)
             current_block = node
 
-        # SUBR
         elif line.startswith("SUBR"):
             name = line.replace("SUBR", "").strip()
             node = ASTNode("SUBR", name, filename)
@@ -74,73 +64,50 @@ def parse_tcl_content(content, filename):
             stack.append(current_block)
             current_block = node
 
-        # STEP LABEL
         elif re.match(r"\d+:", line):
-            step_id = line.split(":")[0]
-            node = ASTNode("STEP_LABEL", step_id, filename)
+            step = line.split(":")[0]
+            node = ASTNode("STEP_LABEL", step, filename)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        # STEP BLOCK
         elif line.startswith("STEP"):
-            node = ASTNode("STEP", line, filename)
+            node = ASTNode("STEP", line)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        # BEGIN
         elif line.startswith("BEGIN"):
-            node = ASTNode("BEGIN", None, filename)
+            node = ASTNode("BEGIN")
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        # END
         elif line.startswith("END"):
             if stack:
                 current_block = stack.pop()
 
-        # DECL SECTIONS
-        elif line.startswith(("VAR", "VARTAG", "DBVAR", "UNITS")):
-            node = ASTNode("DECL_SECTION", line, filename)
-            current_block.add(node)
+        elif line.startswith(("VAR","VARTAG","DBVAR","UNITS")):
+            current_block.add(ASTNode("DECL_SECTION", line))
 
-        # COMMAND
         else:
-            node = ASTNode("COMMAND", line, filename)
-            current_block.add(node)
+            current_block.add(ASTNode("COMMAND", line))
 
     return root
 
 ############################################################
-# BUILD PROJECT AST (MULTI FILE)
+# BUILD PROJECT AST
 ############################################################
 
-def build_project_ast(uploaded_files):
+def build_project_ast(files):
 
     project = ASTNode("PROJECT")
 
-    for file in uploaded_files:
-
-        content = file.read().decode(errors="ignore")
-        ast = parse_tcl_content(content, file.name)
-        project.add(ast)
+    for f in files:
+        content = f.read().decode(errors="ignore")
+        project.add(parse_tcl_content(content, f.name))
 
     return project
-
-############################################################
-# FAST AST TEXT BUILDER
-############################################################
-
-def build_ast_text(node, level=0):
-
-    text = "  " * level + f"{node.type}: {node.value}\n"
-
-    for child in node.children:
-        text += build_ast_text(child, level + 1)
-
-    return text
 
 ############################################################
 # SYMBOL TABLE
@@ -152,10 +119,23 @@ def build_symbol_table(project):
 
     for file in project.children:
         for node in file.children:
-            if node.type in ["PROC", "SUBR"]:
+            if node.type in ["PROC","SUBR"]:
                 symbols[node.value] = node.file
 
     return symbols
+
+############################################################
+# AST → TREE DATA (Visualization)
+############################################################
+
+def ast_to_tree(node):
+
+    label = node.type if node.value is None else f"{node.type}: {node.value}"
+
+    return sac.TreeItem(
+        label=label,
+        children=[ast_to_tree(c) for c in node.children]
+    )
 
 ############################################################
 # STREAMLIT UI
@@ -163,7 +143,7 @@ def build_symbol_table(project):
 
 st.set_page_config(layout="wide")
 
-st.title("ABB AdvaBuild TCL → Unified AST Generator")
+st.title("🌳 ABB TCL Unified AST Visualizer")
 
 uploaded_files = st.file_uploader(
     "Upload Multiple TCL Files",
@@ -173,22 +153,34 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
 
-    with st.spinner("Parsing TCL project..."):
-
+    with st.spinner("Building Unified AST..."):
         project_ast = build_project_ast(uploaded_files)
-
         symbols = build_symbol_table(project_ast)
 
-        ast_text = build_ast_text(project_ast)
+    st.success("AST Generated")
 
-    st.success("Unified AST Generated")
+    col1, col2 = st.columns([1,3])
 
-    col1, col2 = st.columns([1,2])
-
+    ########################################################
+    # SYMBOL TABLE
+    ########################################################
     with col1:
         st.subheader("Procedures / Subroutines")
         st.json(symbols)
 
+    ########################################################
+    # TREE VISUALIZATION
+    ########################################################
     with col2:
-        st.subheader("Unified AST")
-        st.text_area("AST View", ast_text, height=700)
+
+        st.subheader("AST Tree")
+
+        tree_data = ast_to_tree(project_ast)
+
+        sac.tree(
+            items=[tree_data],
+            open_all=False,
+            checkbox=False,
+            show_line=True,
+            height=700
+        )
