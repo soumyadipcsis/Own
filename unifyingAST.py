@@ -143,7 +143,7 @@ def ast_to_tree(node):
 
 st.set_page_config(layout="wide")
 
-st.title("🌳 ABB TCL Unified AST Visualizer")
+st.title(" TCL Unified AST Visualizer")
 
 uploaded_files = st.file_uploader(
     "Upload Multiple TCL Files",
