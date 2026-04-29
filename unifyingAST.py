@@ -1,5 +1,4 @@
 import streamlit as st
-import os
 import re
 
 ############################################################
@@ -21,11 +20,10 @@ class ASTNode:
 ############################################################
 
 def remove_comments(text):
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return text
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
 
 ############################################################
-# LEXER
+# TOKENIZER
 ############################################################
 
 def tokenize(text):
@@ -33,149 +31,119 @@ def tokenize(text):
     tokens = []
 
     for line in text.splitlines():
-
         line = line.strip()
-
-        if not line:
-            continue
-
-        tokens.append(line)
+        if line:
+            tokens.append(line)
 
     return tokens
 
 ############################################################
-# TCL DSL PARSER (ABB STYLE)
+# TCL PARSER
 ############################################################
 
-def parse_tcl_file(path):
+def parse_tcl_content(content, filename):
 
-    with open(path, "r", errors="ignore") as f:
-        content = remove_comments(f.read())
-
+    content = remove_comments(content)
     tokens = tokenize(content)
 
-    root = ASTNode("FILE", path)
+    root = ASTNode("FILE", filename)
 
     current_block = root
-
     stack = []
 
     for line in tokens:
 
-        ########################################
         # INCLUDE
-        ########################################
         if line.startswith("INCLUDE"):
-            node = ASTNode("INCLUDE", line.split()[1], path)
+            node = ASTNode("INCLUDE", line.split()[1], filename)
             current_block.add(node)
 
-        ########################################
         # PROC
-        ########################################
         elif line.startswith("PROC"):
             name = line.replace("PROC", "").replace(";", "").strip()
-            node = ASTNode("PROC", name, path)
+            node = ASTNode("PROC", name, filename)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        ########################################
         # SUBR
-        ########################################
         elif line.startswith("SUBR"):
             name = line.replace("SUBR", "").strip()
-            node = ASTNode("SUBR", name, path)
+            node = ASTNode("SUBR", name, filename)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        ########################################
         # STEP LABEL
-        ########################################
         elif re.match(r"\d+:", line):
             step_id = line.split(":")[0]
-            node = ASTNode("STEP_LABEL", step_id, path)
+            node = ASTNode("STEP_LABEL", step_id, filename)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        ########################################
         # STEP BLOCK
-        ########################################
         elif line.startswith("STEP"):
-            node = ASTNode("STEP", line, path)
+            node = ASTNode("STEP", line, filename)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        ########################################
-        # BEGIN BLOCK
-        ########################################
+        # BEGIN
         elif line.startswith("BEGIN"):
-            node = ASTNode("BEGIN", None, path)
+            node = ASTNode("BEGIN", None, filename)
             current_block.add(node)
             stack.append(current_block)
             current_block = node
 
-        ########################################
-        # END BLOCK
-        ########################################
+        # END
         elif line.startswith("END"):
             if stack:
                 current_block = stack.pop()
 
-        ########################################
-        # VARIABLE SECTIONS
-        ########################################
+        # DECL SECTIONS
         elif line.startswith(("VAR", "VARTAG", "DBVAR", "UNITS")):
-            node = ASTNode("DECL_SECTION", line, path)
+            node = ASTNode("DECL_SECTION", line, filename)
             current_block.add(node)
 
-        ########################################
         # COMMAND
-        ########################################
         else:
-            node = ASTNode("COMMAND", line, path)
+            node = ASTNode("COMMAND", line, filename)
             current_block.add(node)
 
     return root
 
-
 ############################################################
-# MERGE MULTIPLE FILES → SINGLE AST
+# BUILD PROJECT AST (MULTI FILE)
 ############################################################
 
-def build_project_ast(folder):
+def build_project_ast(uploaded_files):
 
     project = ASTNode("PROJECT")
 
-    for file in os.listdir(folder):
+    for file in uploaded_files:
 
-        if file.lower().endswith(".tcl"):
-
-            path = os.path.join(folder, file)
-
-            ast = parse_tcl_file(path)
-
-            project.add(ast)
+        content = file.read().decode(errors="ignore")
+        ast = parse_tcl_content(content, file.name)
+        project.add(ast)
 
     return project
 
+############################################################
+# FAST AST TEXT BUILDER
+############################################################
+
+def build_ast_text(node, level=0):
+
+    text = "  " * level + f"{node.type}: {node.value}\n"
+
+    for child in node.children:
+        text += build_ast_text(child, level + 1)
+
+    return text
 
 ############################################################
-# AST VISUALIZER
-############################################################
-
-def show_ast(node, level=0):
-
-    st.text("  " * level + f"{node.type}: {node.value}")
-
-    for c in node.children:
-        show_ast(c, level + 1)
-
-
-############################################################
-# SYMBOL TABLE (GLOBAL)
+# SYMBOL TABLE
 ############################################################
 
 def build_symbol_table(project):
@@ -183,37 +151,44 @@ def build_symbol_table(project):
     symbols = {}
 
     for file in project.children:
-
         for node in file.children:
-
             if node.type in ["PROC", "SUBR"]:
                 symbols[node.value] = node.file
 
     return symbols
 
-
 ############################################################
 # STREAMLIT UI
 ############################################################
 
+st.set_page_config(layout="wide")
+
 st.title("ABB AdvaBuild TCL → Unified AST Generator")
 
-folder = st.text_input("TCL Folder Path")
+uploaded_files = st.file_uploader(
+    "Upload Multiple TCL Files",
+    type=["tcl"],
+    accept_multiple_files=True
+)
 
-if st.button("Generate Project AST"):
+if uploaded_files:
 
-    if not os.path.exists(folder):
-        st.error("Folder not found")
-    else:
+    with st.spinner("Parsing TCL project..."):
 
-        project_ast = build_project_ast(folder)
+        project_ast = build_project_ast(uploaded_files)
 
         symbols = build_symbol_table(project_ast)
 
-        st.success("Unified AST Created")
+        ast_text = build_ast_text(project_ast)
 
-        st.subheader("Detected Procedures / Subroutines")
-        st.write(symbols)
+    st.success("Unified AST Generated")
 
-        st.subheader("AST View")
-        show_ast(project_ast)
+    col1, col2 = st.columns([1,2])
+
+    with col1:
+        st.subheader("Procedures / Subroutines")
+        st.json(symbols)
+
+    with col2:
+        st.subheader("Unified AST")
+        st.text_area("AST View", ast_text, height=700)
